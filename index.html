@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ta"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JARVIS</title>
+<style>
+*{box-sizing:border-box}body{margin:0;height:100dvh;display:flex;flex-direction:column;background:#0b1220;color:#e6edf7;font:16px system-ui,sans-serif}
+header{padding:10px 14px;display:flex;gap:8px;align-items:center;border-bottom:1px solid #1c2a44}header b{flex:1;color:#5ac8fa;letter-spacing:2px}
+button{border:0;border-radius:10px;background:#16233b;color:#e6edf7;font-size:15px;padding:8px 10px}
+#log{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:6px}
+.m{max-width:88%;padding:9px 12px;border-radius:14px;white-space:pre-wrap}.u{align-self:flex-end;background:#1d4ed8}.j{align-self:flex-start;background:#16233b}.s{align-self:center;font-size:12px;color:#8aa0c2;text-align:center}
+a.l{display:inline-block;margin-top:6px;padding:8px 12px;border-radius:10px;background:#5ac8fa;color:#06121f;font-weight:600;text-decoration:none}
+footer{padding:8px;border-top:1px solid #1c2a44;display:flex;gap:6px;align-items:center}
+#txt{flex:1;min-width:0;padding:12px;border-radius:12px;border:1px solid #1c2a44;background:#0f1a2e;color:inherit;font-size:16px}
+#mic{width:54px;height:54px;border-radius:50%;background:#5ac8fa;font-size:22px}#mic.on{background:#ef4444}
+</style></head><body>
+<header><b>JARVIS</b><button id="lang"></button><button id="auto">🔁 off</button><button id="gear">⚙️</button></header>
+<div id="log"></div>
+<footer><input id="txt" placeholder="Type / keyboard 🎤"><button id="send">➤</button><button id="mic">🎤</button></footer>
+<script>
+const $=id=>document.getElementById(id);
+const S={get(k,d){try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+const M={gemini:"gemini-3.8-flash",groq:"openai/gpt-oss-120b",or:"openrouter/free"};
+let keys=S.get("keys",{gemini:"",groq:"",openrouter:""}),hist=S.get("history",[]),facts=S.get("facts",[]),summary=S.get("summary","");
+let stt=S.get("stt","ta-IN"),auto=false,busy=false,rec;
+
+function add(c,t,l){const d=document.createElement("div");d.className="m "+c;d.textContent=t;
+ if(l){d.appendChild(document.createElement("br"));const a=document.createElement("a");a.className="l";a.href=l;a.target="_blank";a.textContent="திற / Open";d.appendChild(a)}
+ $("log").appendChild(d);$("log").scrollTop=1e9;return d}
+
+// ---------- Tools ----------
+const APPS={whatsapp:"https://wa.me/",youtube:"https://www.youtube.com/",instagram:"https://www.instagram.com/",telegram:"https://t.me/",spotify:"https://open.spotify.com/",maps:"https://www.google.com/maps",gmail:"https://mail.google.com/",flipkart:"https://www.flipkart.com/",phone:"tel:",messages:"sms:"};
+const P=(o,r)=>({type:"object",properties:Object.fromEntries(Object.entries(o).map(([k,d])=>[k,{type:"string",description:d}])),required:r||Object.keys(o)});
+const defs=[
+["open_app","Open an app. name is one of: "+Object.keys(APPS).join(", "),P({name:"app name"})],
+["search_web","Open a Google search",P({query:"search text"})],
+["play_youtube","Search YouTube for a song or video",P({query:"search text"})],
+["navigate","Open Google Maps for a place",P({place:"place name"})],
+["call","Open the phone dialer with a number",P({number:"phone number"})],
+["whatsapp_message","Open WhatsApp with a prefilled message",P({number:"digits with country code (optional)",text:"message"},["text"])],
+["set_timer","Start a countdown timer; speaks when done (page must stay open)",P({minutes:"minutes as number",label:"what for"},["minutes"])],
+["calculate","Evaluate a math expression",P({expr:"expression"})],
+["get_time","Get current date and time",null],
+["remember","Save a lasting fact about the user",P({fact:"the fact"})],
+["forget","Delete saved facts containing this text",P({text:"text to match"})],
+["list_memories","List all saved facts",null]];
+const gTools=[{functionDeclarations:defs.map(([name,description,parameters])=>parameters?{name,description,parameters}:{name,description})}];
+const oTools=defs.map(([name,description,parameters])=>({type:"function",function:{name,description,parameters:parameters||{type:"object",properties:{}}}}));
+
+function lk(label,url,go){add("j",label,url);if(go){try{window.open(url,"_blank")}catch{}}}
+function run(n,a){
+ const q=encodeURIComponent;
+ switch(n){
+  case"open_app":{const u=APPS[(a.name||"").toLowerCase()];if(!u)return"Unknown app. Available: "+Object.keys(APPS).join(", ");lk("📱 "+a.name,u,1);return"Opened (button shown; user taps it if the app did not open)."}
+  case"search_web":lk("🔎 "+a.query,"https://www.google.com/search?q="+q(a.query),1);return"Search shown.";
+  case"play_youtube":lk("▶️ "+a.query,"https://www.youtube.com/results?search_query="+q(a.query),1);return"YouTube shown.";
+  case"navigate":lk("🗺️ "+a.place,"https://www.google.com/maps/search/?api=1&query="+q(a.place),1);return"Maps shown.";
+  case"call":lk("📞 "+a.number,"tel:"+a.number,1);return"Dialer shown.";
+  case"whatsapp_message":lk("💬 WhatsApp","https://wa.me/"+(a.number||"").replace(/\D/g,"")+"?text="+q(a.text),1);return"WhatsApp shown.";
+  case"set_timer":{const m=parseFloat(a.minutes);if(!(m>0))return"Invalid minutes";setTimeout(()=>{const t="⏰ "+(a.label||"Timer")+" mudinjadhu";add("j",t);navigator.vibrate&&navigator.vibrate([300,150,300]);speak(t)},m*6e4);return"Timer set for "+m+" min."}
+  case"calculate":{if(!/^[0-9+\-*/().%\s^]+$/.test(a.expr||""))return"Invalid expression";try{return String(Function('"use strict";return ('+a.expr.replace(/\^/g,"**")+')')())}catch{return"Error"}}
+  case"get_time":return new Date().toLocaleString("en-IN");
+  case"remember":if(!facts.includes(a.fact))facts.push(a.fact);S.set("facts",facts);return"Saved.";
+  case"forget":{const n0=facts.length;facts=facts.filter(f=>!f.toLowerCase().includes((a.text||"").toLowerCase()));S.set("facts",facts);return"Removed "+(n0-facts.length)}
+  case"list_memories":return facts.join("\n")||"(empty)";
+ }return"Unknown tool."}
+let cache=new Map();
+function call(n,a){const k=n+JSON.stringify(a);if(!cache.has(k)){add("s","⚙️ "+n);cache.set(k,run(n,a))}return cache.get(k)}
+
+// ---------- Brain: Gemini -> Groq -> OpenRouter ----------
+function sys(){return "You are JARVIS, a personal voice assistant on the user's Android phone. The user speaks English, Tamil (தமிழ்) or Tanglish (Tamil in English letters). "+
+"Reply in the same language and script the user used: Tamil script -> Tamil script, Tanglish -> Tanglish, English -> English. "+
+"Replies are spoken aloud: short (1-3 sentences), no markdown, no emojis. Answer questions directly and honestly; if unsure or if you lack live data, say so. "+
+"Treat every command as a task: split it into steps, call the tools in order, then give a one-line result. Save lasting personal facts with remember. "+
+"You cannot open apps by yourself: tools show the user a button to tap.\nNow: "+new Date().toLocaleString("en-IN")+
+"\nKnown facts about the user:\n"+(facts.map(f=>"- "+f).join("\n")||"(none)")+(summary?"\nEarlier conversations summary:\n"+summary:"")}
+function past(){const p=hist.slice(-20);while(p.length&&p[0].role!=="user")p.shift();return p}
+
+async function gem(text,o){
+ const c=(o.plain?[]:past()).map(m=>({role:m.role,parts:[{text:m.text}]}));c.push({role:"user",parts:[{text}]});
+ for(let i=0;i<8;i++){
+  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${M.gemini}:generateContent?key=${encodeURIComponent(keys.gemini)}`,{method:"POST",headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({systemInstruction:{parts:[{text:o.system||sys()}]},contents:c,...(o.plain?{}:{tools:gTools})})});
+  const d=await r.json();if(!r.ok)throw new Error(d.error?.message||"HTTP "+r.status);
+  const ps=d.candidates?.[0]?.content?.parts||[],cs=ps.filter(p=>p.functionCall);
+  if(!cs.length)return ps.map(p=>p.text||"").join("").trim();
+  c.push({role:"model",parts:ps});
+  c.push({role:"user",parts:cs.map(p=>({functionResponse:{name:p.functionCall.name,response:{result:call(p.functionCall.name,p.functionCall.args||{})}}}))});
+ }return""}
+
+async function oai(url,key,model,text,o){
+ const m=[{role:"system",content:o.system||sys()},...(o.plain?[]:past()).map(x=>({role:x.role==="model"?"assistant":"user",content:x.text})),{role:"user",content:text}];
+ for(let i=0;i<8;i++){
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({model,messages:m,...(o.plain?{}:{tools:oTools})})});
+  const d=await r.json();if(!r.ok)throw new Error(d.error?.message||"HTTP "+r.status);
+  const g=d.choices?.[0]?.message;if(!g)throw new Error("empty reply");
+  if(!g.tool_calls?.length)return(g.content||"").trim();
+  m.push({role:"assistant",content:g.content||"",tool_calls:g.tool_calls});
+  for(const t of g.tool_calls){let a={};try{a=JSON.parse(t.function.arguments||"{}")}catch{}m.push({role:"tool",tool_call_id:t.id,content:call(t.function.name,a)})}
+ }return""}
+
+const providers=[
+ ["Gemini",()=>keys.gemini,(t,o)=>gem(t,o)],
+ ["Groq",()=>keys.groq,(t,o)=>oai("https://api.groq.com/openai/v1/chat/completions",keys.groq,M.groq,t,o)],
+ ["OpenRouter",()=>keys.openrouter,(t,o)=>oai("https://openrouter.ai/api/v1/chat/completions",keys.openrouter,M.or,t,o)]];
+async function ask(text,o={}){cache=new Map();const e=[];
+ for(const[n,has,f]of providers){if(!has())continue;try{const r=await f(text,o);if(r)return{reply:r,via:n};e.push(n+": empty")}catch(x){e.push(n+": "+x.message)}}
+ throw new Error(e.join(" | ")||"API key illa")}
+
+async function compress(){ // long-term memory: fold old chat into a summary
+ if(hist.length<40)return;const old=hist.splice(0,20);
+ try{const r=await ask("Merge into a short memory summary (max 120 words; keep names, plans, preferences, unfinished tasks).\nPrevious summary: "+summary+"\nNew chat:\n"+old.map(m=>m.role+": "+m.text).join("\n"),{plain:true,system:"You write compact memory summaries."});summary=r.reply;S.set("summary",summary)}catch{hist.unshift(...old)}
+ S.set("history",hist)}
+
+// ---------- Voice ----------
+function speak(t){return new Promise(res=>{if(!window.speechSynthesis||!t)return res();speechSynthesis.cancel();
+ const ta=/[\u0B80-\u0BFF]/.test(t),u=new SpeechSynthesisUtterance(t);u.lang=ta?"ta-IN":"en-IN";
+ const v=speechSynthesis.getVoices().find(v=>v.lang.replace("_","-").toLowerCase().startsWith(u.lang.toLowerCase()))||speechSynthesis.getVoices().find(v=>v.lang.toLowerCase().startsWith(ta?"ta":"en"));
+ if(v)u.voice=v;u.onend=u.onerror=()=>res();speechSynthesis.speak(u);setTimeout(res,Math.min(40000,t.length*130+3000))})}
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+function listen(){if(!SR)return add("s","Chrome use pannunga.");try{rec&&rec.stop()}catch{}
+ rec=new SR();rec.lang=stt;rec.onstart=()=>$("mic").classList.add("on");rec.onend=()=>$("mic").classList.remove("on");
+ rec.onerror=e=>{auto=false;setAuto();if(e.error!=="no-speech"&&e.error!=="aborted")add("s",e.error==="not-allowed"?"Mic block. https-la host pannunga (README steps), illa keyboard 🎤 use pannunga.":"Mic: "+e.error)};
+ rec.onresult=e=>handle(e.results[0][0].transcript);rec.start()}
+
+async function handle(text){text=(text||"").trim();if(!text||busy)return;
+ if(!(keys.gemini||keys.groq||keys.openrouter))return setKeys();
+ if(/^(stop|exit|நிறுத்து|போதும்)$/i.test(text)){auto=false;setAuto();return add("s","Stopped.")}
+ busy=true;add("u",text);const w=add("s","…");
+ try{const{reply,via}=await ask(text);w.remove();
+  if(reply){add("j",reply);add("s","via "+via);hist.push({role:"user",text},{role:"model",text:reply});S.set("history",hist);compress();await speak(reply)}}
+ catch(e){w.remove();add("s","Error: "+e.message)}
+ busy=false;if(auto)listen()}
+
+// ---------- UI ----------
+function setKeys(){const g=prompt("1/3 Gemini key (blank = skip):",keys.gemini||"");if(g===null)return;const q=prompt("2/3 Groq key:",keys.groq||"");if(q===null)return;const o=prompt("3/3 OpenRouter key:",keys.openrouter||"");if(o===null)return;
+ keys={gemini:g.trim(),groq:q.trim(),openrouter:o.trim()};S.set("keys",keys)}
+function menu(){const c=prompt("1=API keys\n2=Memory kaattu\n3=Memory backup (copy)\n4=Memory restore (paste)\n5=Memory clear");
+ if(c==="1")setKeys();
+ else if(c==="2")add("s","Facts:\n"+(facts.join("\n")||"-")+"\n\nSummary: "+(summary||"-"));
+ else if(c==="3")navigator.clipboard.writeText(JSON.stringify({facts,summary,hist})).then(()=>add("s","Backup copied."),()=>add("s","Copy failed."));
+ else if(c==="4"){try{const d=JSON.parse(prompt("Backup paste pannunga"));facts=d.facts||[];summary=d.summary||"";hist=d.hist||[];S.set("facts",facts);S.set("summary",summary);S.set("history",hist);add("s","Restored.")}catch{add("s","Invalid backup.")}}
+ else if(c==="5"&&confirm("Memory ellam azhikkava?")){facts=[];summary="";hist=[];S.set("facts",facts);S.set("summary","");S.set("history",hist);add("s","Cleared.")}}
+function setAuto(){$("auto").textContent=auto?"🔁 on":"🔁 off"}
+function setLang(){$("lang").textContent=stt==="ta-IN"?"தமிழ்":"EN"}
+$("lang").onclick=()=>{stt=stt==="ta-IN"?"en-IN":"ta-IN";S.set("stt",stt);setLang();add("s",stt==="ta-IN"?"Mic: Tamil":"Mic: English / Tanglish")};
+$("auto").onclick=()=>{auto=!auto;setAuto();if(auto&&!busy)listen()};
+$("gear").onclick=menu;$("mic").onclick=listen;
+$("send").onclick=()=>{const t=$("txt").value;$("txt").value="";handle(t)};
+$("txt").addEventListener("keydown",e=>{if(e.key==="Enter")$("send").click()});
+setLang();setAuto();
+add("s",(keys.gemini||keys.groq||keys.openrouter)?"Ready. 🎤 thattunga. தமிழ்/EN button-la mic language maathalaam.":"⚙️ → 1 thattunga, API keys add pannunga.");
+</script></body></html>
